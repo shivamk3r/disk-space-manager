@@ -262,7 +262,7 @@ agent skills live in `.agents/skills/`, and shared command prompts live in
 
 ## License
 
-MIT License
+[MIT License](LICENSE)
 
 ## Contributing
 
