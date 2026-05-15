@@ -22,6 +22,8 @@ confirmation before changing files, and record action logs.
   parallel scanning, and optimized analysis.
 - **Safety First**: Requires explicit confirmation before destructive actions.
 - **Rich CLI**: Terminal UI with progress bars, tables, and color-coded output.
+- **Web Dashboard**: Optional FastAPI and React interface for visual reports,
+  live progress, candidate selection, and confirmed clean/archive actions.
 - **External Drive Detection**: Auto-detects writable external drives on macOS
   and common Linux mount locations.
 - **Action Logging**: Logs delete and archive actions for review and audit.
@@ -57,6 +59,28 @@ uv run disk-space-manager --help
 
 `uv run python main.py ...` is still available as a compatibility shim when
 running from a checkout.
+
+### Web Dashboard
+
+Start the packaged FastAPI and React application with one command:
+
+```bash
+uv run disk-space-manager-web
+```
+
+The server binds to `127.0.0.1` by default, prints a tokenized URL, stores job
+history in `~/.disk-space-manager-web.sqlite3`, and serves the built React
+frontend from the Python package.
+
+For frontend/backend development, run:
+
+```bash
+uv run disk-space-manager-web --dev
+```
+
+Development mode starts FastAPI and the Vite frontend together. API requests
+require the printed token. Use `--host 0.0.0.0` only when you intentionally want
+network access, and keep the token private.
 
 ### Analyze Disk Usage
 
@@ -144,6 +168,7 @@ uv run disk-space-manager --dry-run archive
 - `clean` - Identify and remove cache files after confirmation.
 - `archive` - Move old files to an external drive or local folder.
 - `full-report` - Generate a comprehensive analysis report.
+- `disk-space-manager-web` - Start the web dashboard and API.
 
 ## Options
 
@@ -166,6 +191,9 @@ uv run disk-space-manager --dry-run archive
 4. **Dry Run**: Mutating workflows can be tested without file changes.
 5. **Error Handling**: Permission errors and inaccessible files are handled
    gracefully where possible.
+6. **Web Token Auth**: Web API routes require a local token. Mutating web
+   actions only accept candidate IDs from completed report jobs and require a
+   confirmation phrase unless run in dry-run mode.
 
 ## How It Works
 

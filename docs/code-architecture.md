@@ -9,15 +9,25 @@ The repository root stays small: `main.py` is only a compatibility shim for
 ```bash
 uv run disk-space-manager ...
 uv run python -m disk_space_manager ...
+uv run disk-space-manager-web
 ```
 
-The runtime pipeline is still intentionally direct:
+The CLI runtime pipeline is still intentionally direct:
 
 ```text
 Click command -> workflow -> DiskScanner -> FileAnalyzer -> Rich UI
                          |          \-> DuplicateDetector -> Rich UI
                          v
                   ActionExecutor
+```
+
+The web runtime wraps the same core modules with service and persistence layers:
+
+```text
+React UI -> FastAPI routes -> web services -> DiskScanner/FileAnalyzer
+                                      |      \-> DuplicateDetector
+                                      v
+                              SQLite + ActionExecutor
 ```
 
 The architectural goal is separation of concerns without adding heavy
@@ -196,6 +206,20 @@ them with focused tests.
 Contains shared helpers for size formatting, metadata reads, excluded path
 checks, directory sizing, available-space checks, safe deletion, link/copy
 helpers, and archive target path construction.
+
+### `src/disk_space_manager/web/`
+
+Contains the optional FastAPI application and built React assets.
+
+- `server.py` exposes `disk-space-manager-web`, prints the tokenized URL, and
+  can start Vite in `--dev` mode.
+- `app.py` owns FastAPI route declarations, token-protected API dependencies,
+  Server-Sent Events, and static frontend serving.
+- `services.py` converts core scan/analyze results into persisted web reports
+  and runs clean/archive actions only against stored candidate IDs.
+- `jobs.py` queues long-running report jobs on a single background worker.
+- `repository.py` persists job history, report summaries, candidates, and
+  action results in SQLite.
 
 ## Command Flows
 

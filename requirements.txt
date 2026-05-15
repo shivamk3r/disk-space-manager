@@ -1,7 +1,10 @@
 ImageHash>=4.3.1
 Pillow>=10.0.0
 click>=8.1.0
+fastapi>=0.115.0
 numpy>=1.26.0
 opencv-python-headless>=4.9.0.80
+pydantic>=2.7.0
 rich>=13.0.0
 soundfile>=0.12.1
+uvicorn[standard]>=0.30.0
