@@ -1,12 +1,14 @@
 # Disk Space Manager
 
-A Python CLI tool for Unix-like systems that helps manage disk space by
-analyzing usage, identifying removable cache and temporary files, and archiving
-old files to an external drive or local folder.
+A Python disk maintenance application for Unix-like systems. It can be used as
+a terminal CLI or as an optional FastAPI + React web dashboard for visual disk
+reports, interactive candidate review, and confirmed clean/archive actions.
 
 The tool is designed for macOS and Linux. It keeps destructive actions
 explicit: clean and archive workflows support dry-run previews, require
-confirmation before changing files, and record action logs.
+confirmation before changing files, and record action logs. The web dashboard
+uses the same core scanner, analyzer, duplicate detector, and executor as the
+CLI.
 
 ## Features
 
@@ -51,6 +53,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ## Usage
 
+### CLI
+
 The preferred command is the installed package script:
 
 ```bash
@@ -72,15 +76,40 @@ The server binds to `127.0.0.1` by default, prints a tokenized URL, stores job
 history in `~/.disk-space-manager-web.sqlite3`, and serves the built React
 frontend from the Python package.
 
+Useful web server options:
+
+```bash
+uv run disk-space-manager-web --host 127.0.0.1 --port 8765
+uv run disk-space-manager-web --db-path ~/.disk-space-manager-web.sqlite3
+uv run disk-space-manager-web --token <token>
+```
+
+If no token is provided, the server reads `DISK_SPACE_MANAGER_WEB_TOKEN`, then
+falls back to `~/.disk-space-manager-web-token`, creating that file when
+needed. API requests require the token through the frontend URL, `Authorization:
+Bearer <token>`, `X-API-Token`, or the `token` query parameter used by the
+Server-Sent Events stream.
+
 For frontend/backend development, run:
 
 ```bash
 uv run disk-space-manager-web --dev
 ```
 
-Development mode starts FastAPI and the Vite frontend together. API requests
-require the printed token. Use `--host 0.0.0.0` only when you intentionally want
-network access, and keep the token private.
+Development mode starts FastAPI and the Vite frontend together, using
+`--frontend-port 5173` by default. Use `--host 0.0.0.0` only when you
+intentionally want network access, and keep the token private.
+
+The web workflow is:
+
+1. Create a report job with a scan path, age threshold, and duplicate options.
+2. Watch live progress while the backend scans and analyzes in a background
+   worker.
+3. Review visual summaries, largest files/directories, duplicate groups, cache
+   candidates, and old-file candidates.
+4. Select stored candidate IDs from the completed report.
+5. Run clean/archive in dry-run mode, or provide the displayed confirmation
+   phrase to execute the real action.
 
 ### Analyze Disk Usage
 
@@ -279,9 +308,12 @@ Default settings live in `src/disk_space_manager/config.py`:
 - Python 3.9+
 - macOS or Linux
 - A local folder or mounted external drive for archiving
+- FastAPI, Uvicorn, and Pydantic for the web API
+- SQLite for web job, report, candidate, and action history
 - Offline media libraries for duplicate analysis: Pillow, ImageHash,
   OpenCV headless, SoundFile, and NumPy
 - [uv](https://docs.astral.sh/uv/) for dependency management
+- Node.js and npm only when developing or rebuilding the React frontend
 
 ## Action Log
 
@@ -289,21 +321,28 @@ All delete and archive actions are logged to
 `~/.disk-space-manager-actions.log` with timestamps, paths, sizes, status, and
 dry-run state.
 
+The web dashboard also stores job history, report summaries, actionable
+candidates, and action results in SQLite. It does not store every scanned file,
+which keeps the database bounded for large scans.
+
 ## Architecture
 
 ```text
-main.py                                  Checkout compatibility shim
-src/disk_space_manager/cli.py            Click command declarations
-src/disk_space_manager/workflows.py      Command workflow orchestration
-src/disk_space_manager/ui.py             Rich terminal presentation
+main.py                                   Checkout compatibility shim
+src/disk_space_manager/cli.py             Click command declarations
+src/disk_space_manager/workflows.py       CLI workflow orchestration
+src/disk_space_manager/ui.py              Rich terminal presentation
 src/disk_space_manager/archive_targets.py Archive target resolution
-src/disk_space_manager/scanner.py        Filesystem scanning
-src/disk_space_manager/analyzer.py       File categorization and estimates
-src/disk_space_manager/duplicates.py     Duplicate and near-duplicate analysis
-src/disk_space_manager/executor.py       File operations and logging
-src/disk_space_manager/drive_detector.py External drive auto-detection
-src/disk_space_manager/config.py         Configuration constants
-src/disk_space_manager/utils.py          Shared utilities
+src/disk_space_manager/scanner.py         Filesystem scanning
+src/disk_space_manager/analyzer.py        File categorization and estimates
+src/disk_space_manager/duplicates.py      Duplicate and near-duplicate analysis
+src/disk_space_manager/executor.py        File operations and logging
+src/disk_space_manager/drive_detector.py  External drive auto-detection
+src/disk_space_manager/web/               FastAPI app, services, jobs, SQLite
+src/disk_space_manager/web/static/        Packaged React production build
+frontend/                                 React/Vite frontend source
+src/disk_space_manager/config.py          Configuration constants
+src/disk_space_manager/utils.py           Shared utilities
 ```
 
 ## Agent Context
@@ -321,6 +360,10 @@ agent skills live in `.agents/skills/`, and shared command prompts live in
 - External drives must be mounted and writable when using `--external-path` or
   auto-detection.
 - Scanning speed is bounded by filesystem I/O.
+- The web backend runs one heavy report job at a time.
+- The web token model is suitable for local or carefully controlled server use;
+  it is not a multi-user account system.
+- Web jobs cannot currently be cancelled once started.
 
 ## License
 

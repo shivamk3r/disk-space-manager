@@ -2,8 +2,9 @@
 
 ## Overview
 
-Disk Space Manager is packaged as a Python CLI under `src/disk_space_manager`.
-The repository root stays small: `main.py` is only a compatibility shim for
+Disk Space Manager is packaged under `src/disk_space_manager` with two public
+entrypoints: the Click CLI and the optional FastAPI web dashboard. The
+repository root stays small: `main.py` is only a compatibility shim for
 `uv run python main.py ...`, while the preferred interfaces are:
 
 ```bash
@@ -30,10 +31,10 @@ React UI -> FastAPI routes -> web services -> DiskScanner/FileAnalyzer
                               SQLite + ActionExecutor
 ```
 
-The architectural goal is separation of concerns without adding heavy
-frameworks. Click declarations, workflow sequencing, terminal presentation,
-target resolution, scanning, analysis, and file mutation each have clear module
-ownership.
+The architectural goal is separation of concerns. Click declarations, web
+route declarations, workflow sequencing, service orchestration, terminal
+presentation, frontend presentation, target resolution, scanning, analysis,
+persistence, and file mutation each have clear module ownership.
 
 ## Runtime Package
 
@@ -212,7 +213,8 @@ helpers, and archive target path construction.
 Contains the optional FastAPI application and built React assets.
 
 - `server.py` exposes `disk-space-manager-web`, prints the tokenized URL, and
-  can start Vite in `--dev` mode.
+  can start Vite in `--dev` mode. It owns web command options for host, port,
+  frontend port, SQLite path, and token override.
 - `app.py` owns FastAPI route declarations, token-protected API dependencies,
   Server-Sent Events, and static frontend serving.
 - `services.py` converts core scan/analyze results into persisted web reports
@@ -220,6 +222,51 @@ Contains the optional FastAPI application and built React assets.
 - `jobs.py` queues long-running report jobs on a single background worker.
 - `repository.py` persists job history, report summaries, candidates, and
   action results in SQLite.
+- `schemas.py` contains Pydantic request/response models for jobs and actions.
+- `security.py` reads, creates, and validates API tokens.
+- `static/` contains the production React build served by FastAPI.
+
+Web modules should remain a wrapper around the core scanner, analyzer,
+duplicate detector, archive target resolver, and executor. They should not
+reimplement filesystem traversal or mutation behavior.
+
+### `frontend/`
+
+Contains the React/Vite dashboard source.
+
+- `src/App.tsx` owns the dashboard shell, scan form, job history, progress
+  display, charts, duplicate review, candidate tables, and action panels.
+- `src/api.ts` centralizes token-aware API calls and SSE subscription setup.
+- `src/types.ts` mirrors the JSON structures returned by the FastAPI API.
+- `vite.config.ts` builds production assets into
+  `src/disk_space_manager/web/static/`.
+
+The checked-in static build is what `disk-space-manager-web` serves outside
+`--dev` mode. When frontend source changes, rebuild the assets with
+`npm run build` from `frontend/`.
+
+## Web API Routes
+
+The web API is token-protected except for `/health`.
+
+- `GET /health`: unauthenticated liveness check.
+- `GET /api/config`: default age threshold and feature availability.
+- `POST /api/jobs`: create a queued report job.
+- `GET /api/jobs`: list recent persisted jobs.
+- `GET /api/jobs/{job_id}`: read job status, progress, and confirmation
+  phrases.
+- `GET /api/jobs/{job_id}/events`: Server-Sent Events stream of job snapshots.
+- `GET /api/jobs/{job_id}/report`: completed report plus stored cache and old
+  file candidates.
+- `POST /api/jobs/{job_id}/actions/clean`: dry-run or confirmed delete action
+  for selected cache candidate IDs.
+- `POST /api/jobs/{job_id}/actions/archive`: dry-run or confirmed archive
+  action for selected old-file candidate IDs.
+
+Report jobs are queued through a `ThreadPoolExecutor` with one worker. Job
+state is persisted in SQLite so prior job summaries remain visible after a
+restart. The repository stores actionable candidates and report summaries, not
+every scanned file.
 
 ## Command Flows
 
@@ -269,12 +316,53 @@ This command is read-only.
 
 This command is read-only.
 
+### `disk-space-manager-web`
+
+1. Resolve or create an API token from `--token`,
+   `DISK_SPACE_MANAGER_WEB_TOKEN`, or `~/.disk-space-manager-web-token`.
+2. Open the SQLite repository at `--db-path`, defaulting to
+   `~/.disk-space-manager-web.sqlite3`.
+3. In normal mode, create the FastAPI app and serve packaged React assets.
+4. In `--dev` mode, start Vite with backend URL and token environment values,
+   enable CORS for the Vite origin, and run FastAPI.
+5. Bind to `--host` and `--port`, defaulting to `127.0.0.1:8765`.
+
+The web command does not run a scan by itself. Scans start when the frontend or
+another token-authenticated client posts to `/api/jobs`.
+
+### Web report job
+
+1. Create a queued job row in SQLite.
+2. Run the scanner, analyzer, and optional duplicate detector in the background
+   worker.
+3. Persist progress phase, percent, and message throughout the job.
+4. Store report summary JSON and actionable cache/old-file candidates.
+5. Mark the job completed or failed.
+6. Stream job snapshots to connected SSE clients.
+
+### Web clean/archive action
+
+1. Require a completed job and at least one selected candidate ID.
+2. Reload candidates from SQLite by job, kind, and ID.
+3. For real actions, require the job's confirmation phrase.
+4. For archive, resolve the selected target and skip unsafe selected paths such
+   as symlinks or files under the target root.
+5. Call `ActionExecutor` with `dry_run` set from the request.
+6. Persist the action result in SQLite and rely on `ActionExecutor` for action
+   log entries.
+
 ## Tests and Profiling
 
 The test suite uses pytest and Click's `CliRunner`. It covers archive behavior,
 target precedence, archive target exclusions, repeated archive runs, direct
 executor behavior, Linux drive detection, scanner and analyzer progress,
-duplicate detection, `full-report` smoke coverage, and profiling helper safety.
+duplicate detection, `full-report` smoke coverage, web token/auth behavior,
+web report jobs, web dry-run actions, SQLite repository persistence, and
+profiling helper safety.
+
+The frontend test suite uses Vitest and React Testing Library for dashboard
+smoke coverage. TypeScript checks and the production Vite build verify the
+frontend source and generated static assets.
 
 `scripts/profile_report_generation.py` is the performance harness. It owns and
 recreates `downloads/benchmark`, generates deterministic sparse-file datasets,
@@ -294,6 +382,15 @@ When adding features:
 - Put file mutations only in `executor.py`.
 - Put archive destination rules in `archive_targets.py`.
 - Put external-drive discovery in `drive_detector.py`.
+- Put web request/response models in `web/schemas.py`.
+- Put web route wiring in `web/app.py`.
+- Put web orchestration in `web/services.py` and persistence in
+  `web/repository.py`.
+- Update frontend API types and UI components in `frontend/src/` when web JSON
+  shapes or dashboard behavior changes.
+- Rebuild packaged frontend assets with `npm run build` when frontend source
+  changes.
 - Update `config.py` for default thresholds, patterns, and exclusions.
-- Add tests using temporary paths and `CliRunner`; avoid broad real filesystem
-  scans in automated validation.
+- Add tests using temporary paths, `CliRunner`, FastAPI `TestClient`, or
+  frontend mocks as appropriate; avoid broad real filesystem scans in
+  automated validation.

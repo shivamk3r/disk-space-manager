@@ -2,14 +2,20 @@
 
 ## Supported Platform and Dependencies
 
-Disk Space Manager is specified as a local CLI application for Unix-like
-systems, with supported workflows on macOS and Linux.
+Disk Space Manager is specified as a local Unix-like disk maintenance
+application with two supported interfaces:
+
+- A Click/Rich CLI.
+- An optional FastAPI + React web dashboard served by
+  `disk-space-manager-web`.
 
 Runtime requirements:
 
 - Python 3.9 or newer.
 - Click for CLI parsing.
 - Rich for terminal output.
+- FastAPI, Uvicorn, and Pydantic for the web API.
+- SQLite for web job, report, candidate, and action persistence.
 - Pillow and ImageHash for offline image perceptual hashing.
 - OpenCV headless for offline video frame sampling.
 - SoundFile and NumPy for offline audio fingerprinting.
@@ -17,15 +23,17 @@ Runtime requirements:
 - macOS `diskutil` or `/Volumes` for macOS external-drive auto-detection.
 - Linux `/proc/self/mountinfo` for Linux external-drive auto-detection.
 
-Development and verification use `uv` and pytest.
+Development and verification use `uv` and pytest. Frontend development and
+static asset rebuilding use Node.js, npm, Vite, React, TypeScript, Recharts,
+Lucide icons, and Vitest.
 
-## Commands
+## CLI Commands
 
 ### Global Option
 
 `--dry-run`
 
-- Applies to mutating commands.
+- Applies to mutating CLI commands.
 - Shows intended behavior without deleting, moving, creating archive files, or
   creating symlinks.
 - Still records dry-run action log entries when executor methods are reached.
@@ -117,6 +125,133 @@ Behavior:
 - Reports near-duplicate bytes separately as review-only advisory data.
 - Does not delete, move, or write user-file changes.
 
+## Web Command
+
+### `disk-space-manager-web`
+
+Options:
+
+- `--host TEXT`: bind host; defaults to `127.0.0.1`.
+- `--port INTEGER`: bind port; defaults to `8765`.
+- `--dev`: start FastAPI with a Vite development frontend.
+- `--frontend-port INTEGER`: Vite port in `--dev`; defaults to `5173`.
+- `--db-path PATH`: SQLite database path; defaults to
+  `~/.disk-space-manager-web.sqlite3`.
+- `--token TEXT`: API token override.
+
+Token behavior:
+
+- `--token` takes precedence.
+- If omitted, `DISK_SPACE_MANAGER_WEB_TOKEN` is used when present.
+- If no environment token exists, `~/.disk-space-manager-web-token` is read or
+  created with mode `0600` when possible.
+- The server prints a tokenized URL at startup.
+- API routes require a valid token except for `/health`.
+
+Runtime behavior:
+
+- Normal mode serves packaged React assets from
+  `src/disk_space_manager/web/static/`.
+- `--dev` starts `npm run dev` in `frontend/`, passes the backend URL and token
+  through Vite environment variables, and enables CORS for the Vite origin.
+- Binding to a non-localhost host is explicit and should be treated as network
+  mode.
+- The backend uses a single background worker for heavy report jobs.
+
+## Web API Specification
+
+Authentication:
+
+- Token may be supplied as `Authorization: Bearer <token>`, `X-API-Token`, or
+  the `token` query parameter.
+- The query parameter is used by the SSE endpoint because browser
+  `EventSource` cannot set custom headers.
+
+Routes:
+
+- `GET /health`: unauthenticated health check returning `{"status": "ok"}`.
+- `GET /api/config`: default age threshold and duplicate feature flags.
+- `POST /api/jobs`: create a queued report job.
+- `GET /api/jobs`: list recent persisted jobs.
+- `GET /api/jobs/{job_id}`: fetch job status, progress, and confirmation
+  phrases.
+- `GET /api/jobs/{job_id}/events`: stream job snapshots as Server-Sent Events.
+- `GET /api/jobs/{job_id}/report`: fetch completed report summary, job object,
+  cache candidates, and old-file candidates.
+- `POST /api/jobs/{job_id}/actions/clean`: dry-run or confirmed clean action
+  against cache candidate IDs.
+- `POST /api/jobs/{job_id}/actions/archive`: dry-run or confirmed archive
+  action against old-file candidate IDs.
+
+Job creation request:
+
+- `path`: optional string; defaults to the user's home directory.
+- `age_months`: integer from 1 to 120; defaults to the configured CLI default.
+- `include_duplicates`: boolean; defaults to true.
+- `include_near_duplicates`: boolean; defaults to true.
+
+Job response:
+
+- `id`
+- `status`: `queued`, `running`, `completed`, or `failed`.
+- `path`
+- `age_months`
+- `include_duplicates`
+- `include_near_duplicates`
+- `created_at`, `started_at`, `finished_at`
+- `error`
+- `progress_phase`
+- `progress_percent`
+- `progress_message`
+- `confirmation_phrases`: action-specific phrases such as `CLEAN <job-prefix>`
+  and `ARCHIVE <job-prefix>`.
+
+Action request:
+
+- `candidate_ids`: list of stored candidate IDs from a completed report.
+- `dry_run`: boolean; defaults to true.
+- `confirmation_phrase`: required only for real, non-dry-run actions.
+- `target_path`: optional archive target for archive actions.
+- `external_path`: optional mounted external path for archive actions.
+
+Action behavior:
+
+- Actions require a completed job.
+- Actions fail when no candidate IDs are supplied.
+- Candidate IDs are resolved from SQLite by job and kind; arbitrary paths in
+  the request body are not accepted.
+- Real actions require the job's action-specific confirmation phrase.
+- Clean actions operate only on cache candidates.
+- Archive actions operate only on old-file candidates.
+- Archive actions skip selected paths that are symlinks or are under the
+  resolved target root.
+- Web dry-run archive with a local `target_path` does not create that target
+  directory.
+
+## Web Persistence Specification
+
+SQLite persistence is owned by `WebRepository`.
+
+Tables:
+
+- `jobs`: status, scan path, age threshold, duplicate flags, timestamps, error,
+  progress phase, progress percent, and progress message.
+- `reports`: one JSON report summary per job.
+- `candidates`: stored cache/old candidate IDs, kind, path, size, and metadata.
+- `actions`: action type, dry-run flag, target path, selected count, skipped
+  count, result JSON, and timestamp.
+
+Persistence rules:
+
+- Job rows are created before work is submitted to the background worker.
+- Progress updates are persisted during long-running work.
+- Report summaries and actionable candidates are persisted after analysis.
+- The repository stores actionable candidates and report summaries, not every
+  scanned file.
+- Action results are persisted after clean/archive requests.
+- Confirmation phrases are derived from action type and job ID; they are not
+  separately stored.
+
 ## Scan Specification
 
 `DiskScanner.scan()` returns a dictionary with:
@@ -193,7 +328,7 @@ size limits. Supported fingerprints include:
 - Audio: compact waveform and spectral fingerprints with duration tolerance.
 
 Unsupported, too-large, unreadable, or decode-failing files are skipped without
-failing `full-report`.
+failing `full-report` or a web report job.
 
 ## External Drive Detection Specification
 
@@ -246,8 +381,12 @@ Logging behavior:
 
 ## Safety Requirements
 
-- Destructive `clean` and `archive` command paths must keep explicit
+- Destructive CLI `clean` and `archive` command paths must keep explicit
   confirmation outside dry-run mode.
+- Web mutating actions must require token authentication.
+- Web mutating actions must operate on candidate IDs produced by a completed
+  report job, not arbitrary request paths.
+- Web real actions must require the expected confirmation phrase.
 - Dry-run behavior must remain non-mutating for user files and archive output.
 - Action logging must remain enabled for executed and dry-run action paths.
 - Automated tests and validation must use temporary directories or small
@@ -286,6 +425,17 @@ The current test suite covers these behavioral invariants:
 - Near-duplicate text, image, audio, and mocked video fingerprints are covered.
 - `full-report --no-duplicates` and `--no-near-duplicates` control duplicate
   report sections.
+- Web API routes require a token except `/health`.
+- Web report jobs complete against temporary paths and persist reports.
+- Web clean actions require stored cache candidate IDs.
+- Web real clean actions reject missing confirmation phrases.
+- Web dry-run clean leaves files in place.
+- Web dry-run archive uses stored old-file candidate IDs and does not create
+  the local target directory.
+- SQLite repository persistence covers jobs, reports, candidates, and action
+  results.
+- Frontend smoke coverage verifies dashboard job creation behavior with mocked
+  API calls.
 - Profiling helper cleanup is safe and rejects unsafe benchmark paths.
 
 ## Verification
@@ -296,10 +446,21 @@ Lightweight verification before handoff:
 uv run pytest
 ```
 
+Frontend verification when frontend source or packaged static assets change:
+
+```bash
+cd frontend
+npm run typecheck
+npm test
+npm run build
+npm audit --omit=dev
+```
+
 Useful manual checks:
 
 ```bash
 uv run disk-space-manager full-report --path tests --age-months 6
+uv run disk-space-manager-web --help
 uv run python main.py full-report --path tests --age-months 6
 uv run python -m disk_space_manager full-report --path tests --age-months 6
 uv run python scripts/profile_report_generation.py --file-count 10000 --max-bytes 50000000
@@ -307,4 +468,5 @@ uv run python scripts/profile_report_generation.py --file-count 10000 --max-byte
 
 Run the profiler only for performance-sensitive scanner, analyzer, progress, or
 report changes. The profiler owns `downloads/benchmark` and may delete and
-recreate it.
+recreate it. The profiler exercises CLI `full-report`; it does not exercise the
+FastAPI server, SQLite job queue, or React dashboard.

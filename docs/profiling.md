@@ -3,6 +3,10 @@
 Use `scripts/profile_report_generation.py` to measure how long the `full-report`
 command takes against a generated benchmark dataset.
 
+This profiling workflow targets the CLI report pipeline. It does not exercise
+the FastAPI web server, SQLite job queue, Server-Sent Events, or React
+dashboard.
+
 ## Standard Run
 
 From the repository root:
